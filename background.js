@@ -8,15 +8,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// CJK 字体预处理：遍历 DOM，对含中日韩文字的元素强制设置 Figma 可识别的字体
+// CJK 字体预处理：动态检测系统实际渲染的 CJK 字体，替换到 DOM 上
 function preprocessCJKFonts(selector) {
   const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/;
-  const FIGMA_CJK_FONT = 'Noto Sans SC';
+
+  // 用 canvas 探测系统可用的 CJK 字体
+  const CANDIDATES = [
+    'PingFang SC', 'PingFang TC',
+    'Hiragino Sans GB', 'Hiragino Sans',
+    'Microsoft YaHei', 'SimHei', 'SimSun',
+    'Noto Sans SC', 'Noto Sans TC',
+    'Source Han Sans SC', 'Source Han Sans CN',
+    'WenQuanYi Micro Hei',
+    'Apple SD Gothic Neo',         // Korean macOS
+    'Malgun Gothic',               // Korean Windows
+    'Meiryo', 'Yu Gothic',         // Japanese Windows
+  ];
+  const KNOWN_RE = new RegExp(CANDIDATES.map(f => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
+
+  function detectCJKFont() {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const testChar = '永';
+    const size = '72px';
+
+    // baseline: monospace 渲染宽度
+    ctx.font = `${size} monospace`;
+    const baseW = ctx.measureText(testChar).width;
+
+    for (const font of CANDIDATES) {
+      ctx.font = `${size} "${font}", monospace`;
+      if (ctx.measureText(testChar).width !== baseW) return font;
+    }
+    return null;
+  }
+
+  const systemCJK = detectCJKFont();
+  if (!systemCJK) return; // 没检测到任何 CJK 字体
+
+  console.log('[figma-capture] detected CJK font:', systemCJK);
 
   const root = document.querySelector(selector) || document.body;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-
   const processed = new Set();
+
   while (walker.nextNode()) {
     const textNode = walker.currentNode;
     if (!CJK_RE.test(textNode.textContent)) continue;
@@ -25,14 +60,13 @@ function preprocessCJKFonts(selector) {
     if (!el || processed.has(el)) continue;
     processed.add(el);
 
-    const computed = getComputedStyle(el);
-    const families = computed.fontFamily;
+    const families = getComputedStyle(el).fontFamily;
 
-    // 如果已经包含明确的中文字体，跳过
-    if (/Noto Sans (SC|TC|JP|KR)|PingFang|Microsoft YaHei|Hiragino|Source Han/i.test(families)) continue;
+    // 已经包含明确的 CJK 字体名，跳过
+    if (KNOWN_RE.test(families)) continue;
 
-    // 在原有字体栈前插入 CJK 字体
-    el.style.fontFamily = `"${FIGMA_CJK_FONT}", ${families}`;
+    // 在原有字体栈前插入检测到的系统 CJK 字体
+    el.style.fontFamily = `"${systemCJK}", ${families}`;
   }
 }
 
